@@ -13,7 +13,7 @@
  * Sequences solver for seq.nth/seq.update.
  */
 
-#include "theory/strings/sequences_array_solver.h"
+#include "theory/strings/array_core_solver.h"
 
 #include "theory/strings/array_solver.h"
 #include "theory/strings/theory_strings_utils.h"
@@ -27,13 +27,13 @@ namespace cvc5 {
 namespace theory {
 namespace strings {
 
-SequencesArraySolver::SequencesArraySolver(Env& env,
-                                           SolverState& s,
-                                           InferenceManager& im,
-                                           TermRegistry& tr,
-                                           CoreSolver& cs,
-                                           ExtfSolver& es,
-                                           ExtTheory& extt)
+ArrayCoreSolver::ArrayCoreSolver(Env& env,
+                                 SolverState& s,
+                                 InferenceManager& im,
+                                 TermRegistry& tr,
+                                 CoreSolver& cs,
+                                 ExtfSolver& es,
+                                 ExtTheory& extt)
     : EnvObj(env),
       d_state(s),
       d_im(im),
@@ -45,21 +45,21 @@ SequencesArraySolver::SequencesArraySolver(Env& env,
 {
 }
 
-SequencesArraySolver::~SequencesArraySolver() {}
+ArrayCoreSolver::~ArrayCoreSolver() {}
 
-void SequencesArraySolver::sendInference(const std::vector<Node>& exp,
-                                         const Node& lem)
+void ArrayCoreSolver::sendInference(const std::vector<Node>& exp,
+                                    const Node& lem,
+                                    const InferenceId iid)
 {
   if (d_lem.find(lem) == d_lem.end())
   {
     d_lem.insert(lem);
-    InferenceId iid = InferenceId::UNKNOWN;
     Trace("seq-update") << "- send lemma - " << lem << std::endl;
     d_im.sendInference(exp, lem, iid);
   }
 }
 
-void SequencesArraySolver::checkNth(const std::vector<Node>& nthTerms)
+void ArrayCoreSolver::checkNth(const std::vector<Node>& nthTerms)
 {
   NodeManager* nm = NodeManager::currentNM();
   std::vector<Node> extractTerms = d_esolver.getActive(STRING_SUBSTR);
@@ -70,19 +70,19 @@ void SequencesArraySolver::checkNth(const std::vector<Node>& nthTerms)
       // (seq.extract A i l) ^ (<= 0 i) ^ (< i (str.len A)) --> (seq.unit
       // (seq.nth A i))
       std::vector<Node> exp;
-      Node cond1 = nm->mkNode(LEQ, nm->mkConst(Rational(0)), n[1]);
+      Node cond1 = nm->mkNode(LEQ, nm->mkConstInt(Rational(0)), n[1]);
       Node cond2 = nm->mkNode(LT, n[1], nm->mkNode(STRING_LENGTH, n[0]));
       Node cond = nm->mkNode(AND, cond1, cond2);
       Node body1 = nm->mkNode(
           EQUAL, n, nm->mkNode(SEQ_UNIT, nm->mkNode(SEQ_NTH, n[0], n[1])));
       Node body2 = nm->mkNode(EQUAL, n, Word::mkEmptyWord(n.getType()));
       Node lem = nm->mkNode(ITE, cond, body1, body2);
-      sendInference(exp, lem);
+      sendInference(exp, lem, InferenceId::STRINGS_ARRAY_NTH_EXTRACT);
     }
   }
 }
 
-void SequencesArraySolver::checkUpdate(const std::vector<Node>& updateTerms)
+void ArrayCoreSolver::checkUpdate(const std::vector<Node>& updateTerms)
 {
   NodeManager* nm = NodeManager::currentNM();
 
@@ -115,11 +115,10 @@ void SequencesArraySolver::checkUpdate(const std::vector<Node>& updateTerms)
     // n[2][0]
     Node left = nm->mkNode(SEQ_NTH, termProxy, n[1]);
     Node right =
-        nm->mkNode(SEQ_NTH, n[2], nm->mkConst(Rational(0)));  // n[2][0]
-    right = Rewriter::rewrite(right);
+        nm->mkNode(SEQ_NTH, n[2], nm->mkConstInt(Rational(0)));  // n[2][0]
     Node lem = nm->mkNode(EQUAL, left, right);
     Trace("seq-array-debug") << "enter" << std::endl;
-    sendInference(exp, lem);
+    sendInference(exp, lem, InferenceId::STRINGS_ARRAY_NTH_UPDATE);
 
     // enumerate possible index
     for (auto nth : d_index_map)
@@ -139,7 +138,7 @@ void SequencesArraySolver::checkUpdate(const std::vector<Node>& updateTerms)
             Node nth2 = nm->mkNode(SEQ_NTH, n[0], j);
             right = nm->mkNode(EQUAL, nth1, nth2);
             lem = nm->mkNode(IMPLIES, left, right);
-            sendInference(exp, lem);
+            sendInference(exp, lem, InferenceId::STRINGS_ARRAY_NTH_UPDATE);
           }
 
           // normal cases
@@ -155,15 +154,15 @@ void SequencesArraySolver::checkUpdate(const std::vector<Node>& updateTerms)
           Node body2 = nm->mkNode(SEQ_NTH, n[0], j);
           right = nm->mkNode(ITE, cond, body1, body2);
           lem = nm->mkNode(EQUAL, left, right);
-          sendInference(exp, lem);
+          sendInference(exp, lem, InferenceId::STRINGS_ARRAY_NTH_UPDATE);
         }
       }
     }
   }
 }
 
-void SequencesArraySolver::check(const std::vector<Node>& nthTerms,
-                                 const std::vector<Node>& updateTerms)
+void ArrayCoreSolver::check(const std::vector<Node>& nthTerms,
+                            const std::vector<Node>& updateTerms)
 {
   NodeManager* nm = NodeManager::currentNM();
 
@@ -186,7 +185,6 @@ void SequencesArraySolver::check(const std::vector<Node>& nthTerms,
   }
   Trace("seq-update") << "SequencesArraySolver::check..." << std::endl;
   d_writeModel.clear();
-  // AJR: i think d_index_map should be cleared at the beginning of each check?
   d_index_map.clear();
   for (const Node& n : nthTerms)
   {
@@ -212,10 +210,10 @@ void SequencesArraySolver::check(const std::vector<Node>& nthTerms,
       Node i = n[1];
       Node sLen = nm->mkNode(STRING_LENGTH, s);
       Node iRev = nm->mkNode(
-          MINUS, sLen, nm->mkNode(PLUS, i, nm->mkConst(Rational(1))));
+          MINUS, sLen, nm->mkNode(PLUS, i, nm->mkConstInt(Rational(1))));
 
       std::vector<Node> nexp;
-      nexp.push_back(nm->mkNode(LEQ, nm->mkConst(Rational(0)), i));
+      nexp.push_back(nm->mkNode(LEQ, nm->mkConstInt(Rational(0)), i));
       nexp.push_back(nm->mkNode(LT, i, sLen));
 
       // 0 <= i ^ i < len(s) => seq.nth(seq.rev(s), i) = seq.nth(s, len(s) - i -
@@ -235,8 +233,7 @@ void SequencesArraySolver::check(const std::vector<Node>& nthTerms,
   }
 }
 
-void SequencesArraySolver::computeConnected(
-    const std::vector<Node>& updateTerms)
+void ArrayCoreSolver::computeConnected(const std::vector<Node>& updateTerms)
 {
   d_connectedSeq.clear();
   std::map<Node, Node> conTmp;
@@ -279,7 +276,7 @@ void SequencesArraySolver::computeConnected(
   }
 }
 
-const std::map<Node, Node>& SequencesArraySolver::getWriteModel(Node eqc)
+const std::map<Node, Node>& ArrayCoreSolver::getWriteModel(Node eqc)
 {
   if (Trace.isOn("seq-write-model"))
   {
@@ -292,7 +289,7 @@ const std::map<Node, Node>& SequencesArraySolver::getWriteModel(Node eqc)
   return d_writeModel[eqc];
 }
 
-const std::map<Node, Node>& SequencesArraySolver::getConnectedSequences()
+const std::map<Node, Node>& ArrayCoreSolver::getConnectedSequences()
 {
   return d_connectedSeq;
 }

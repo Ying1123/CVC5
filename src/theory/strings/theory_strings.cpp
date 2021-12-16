@@ -59,13 +59,15 @@ TheoryStrings::TheoryStrings(Env& env, OutputChannel& out, Valuation valuation)
       d_rewriter(env.getRewriter(),
                  &d_statistics.d_rewrites,
                  d_termReg.getAlphabetCardinality()),
-      d_eagerSolver(env, d_state, d_termReg),
+      d_eagerSolver(options().strings.stringEagerSolver
+                        ? new EagerSolver(env, d_state, d_termReg)
+                        : nullptr),
       d_extTheoryCb(),
       d_im(env, *this, d_state, d_termReg, d_extTheory, d_statistics),
       d_extTheory(env, d_extTheoryCb, d_im),
       // the checker depends on the cardinality of the alphabet
       d_checker(d_termReg.getAlphabetCardinality()),
-      d_bsolver(env, d_state, d_im),
+      d_bsolver(env, d_state, d_im, d_termReg),
       d_csolver(env, d_state, d_im, d_termReg, d_bsolver),
       d_esolver(env,
                 d_state,
@@ -81,13 +83,14 @@ TheoryStrings::TheoryStrings(Env& env, OutputChannel& out, Valuation valuation)
       d_rsolver(
           env, d_state, d_im, d_termReg, d_csolver, d_esolver, d_statistics),
       d_regexp_elim(options().strings.regExpElimAgg, d_pnm, userContext()),
-      d_stringsFmf(env, valuation, d_termReg)
+      d_stringsFmf(env, valuation, d_termReg),
+      d_strat(d_env)
 {
   d_termReg.finishInit(&d_im);
 
-  d_zero = NodeManager::currentNM()->mkConst(CONST_RATIONAL, Rational(0));
-  d_one = NodeManager::currentNM()->mkConst(CONST_RATIONAL, Rational(1));
-  d_neg_one = NodeManager::currentNM()->mkConst(CONST_RATIONAL, Rational(-1));
+  d_zero = NodeManager::currentNM()->mkConstInt(Rational(0));
+  d_one = NodeManager::currentNM()->mkConstInt(Rational(1));
+  d_neg_one = NodeManager::currentNM()->mkConstInt(Rational(-1));
   d_true = NodeManager::currentNM()->mkConst( true );
   d_false = NodeManager::currentNM()->mkConst( false );
 
@@ -229,7 +232,7 @@ bool TheoryStrings::collectModelValues(TheoryModel* m,
   Trace("strings-model") << "TheoryStrings::collectModelValues" << std::endl;
   // Collects representatives by types and orders sequence types by how nested
   // they are
-  std::map<TypeNode, ModelTypeInfo> tinfo;
+  std::map<TypeNode, std::unordered_set<Node>> repSet;
   std::unordered_set<TypeNode> toProcess;
   // Generate model
   // get the relevant string equivalence classes
@@ -239,17 +242,7 @@ bool TheoryStrings::collectModelValues(TheoryModel* m,
     if (tn.isStringLike())
     {
       Node r = d_state.getRepresentative(s);
-      tinfo[tn].d_repSet.insert(r);
-      toProcess.insert(tn);
-      if (s.getKind() == STRING_UPDATE)
-      {
-        tinfo[tn].d_updateTerms.insert(s);
-      }
-    }
-    if (s.getKind() == SEQ_NTH)
-    {
-      tn = s[0].getType();
-      tinfo[tn].d_nthTerms.insert(s);
+      repSet[tn].insert(r);
       toProcess.insert(tn);
     }
   }
@@ -258,7 +251,7 @@ bool TheoryStrings::collectModelValues(TheoryModel* m,
   {
     // Pick one of the remaining types to collect model values for
     TypeNode tn = *toProcess.begin();
-    if (!collectModelInfoType(tn, toProcess, tinfo, m))
+    if (!collectModelInfoType(tn, toProcess, repSet, m))
     {
       return false;
     }
@@ -283,7 +276,7 @@ struct SortSeqIndex
 bool TheoryStrings::collectModelInfoType(
     TypeNode tn,
     std::unordered_set<TypeNode>& toProcess,
-    const std::map<TypeNode, ModelTypeInfo>& tinfo,
+    const std::map<TypeNode, std::unordered_set<Node> >& repSet,
     TheoryModel* m)
 {
   // Make sure that the model values for the element type of sequences are
@@ -292,7 +285,7 @@ bool TheoryStrings::collectModelInfoType(
   {
     TypeNode tnElem = tn.getSequenceElementType();
     if (toProcess.find(tnElem) != toProcess.end()
-        && !collectModelInfoType(tnElem, toProcess, tinfo, m))
+        && !collectModelInfoType(tnElem, toProcess, repSet, m))
     {
       return false;
     }
@@ -305,26 +298,10 @@ bool TheoryStrings::collectModelInfoType(
   // current type
   std::map<TypeNode, std::vector<std::vector<Node> > > colT;
   std::map<TypeNode, std::vector<Node> > ltsT;
-  const ModelTypeInfo& mti = tinfo.at(tn);
-  const std::vector<Node> repVec(mti.d_repSet.begin(), mti.d_repSet.end());
+  const std::vector<Node> repVec(repSet.at(tn).begin(), repSet.at(tn).end());
   d_state.separateByLength(repVec, colT, ltsT);
   const std::vector<std::vector<Node> >& col = colT[tn];
   const std::vector<Node>& lts = ltsT[tn];
-
-  // process the update terms: organize by eqc?
-  /*
-if (options::stringSeqUpdate())
-{
-  for (size_t i=0; i<2; i++)
-  {
-    const std::unordered_set<Node>& terms = i==0 ? mti.d_updateTerms :
-mti.d_nthTerms; for (const Node& t : terms)
-    {
-
-    }
-  }
-}
-  */
 
   NodeManager* nm = NodeManager::currentNM();
   std::map< Node, Node > processed;
@@ -382,9 +359,10 @@ mti.d_nthTerms; for (const Node& t : terms)
   // confirmed by calculus invariant, see paper
   Trace("strings-model") << "Assign to equivalence classes..." << std::endl;
   std::map<Node, Node> pure_eq_assign;
+  // if we are using the sequences array solver, get the connected sequences
   const std::map<Node, Node>* conSeq = nullptr;
   std::map<Node, Node>::const_iterator itcs;
-  if (options::stringSeqUpdate() != options::StringSeqUpdateMode::NONE)
+  if (options().strings.seqArray != options::SeqArrayMode::NONE)
   {
     conSeq = &d_asolver.getConnectedSequences();
   }
@@ -427,7 +405,7 @@ mti.d_nthTerms; for (const Node& t : terms)
         }
         Trace("strings-model")
             << "*** Decide to make length of " << lvalue << std::endl;
-        lenValue = nm->mkConst(CONST_RATIONAL, Rational(lvalue));
+        lenValue = nm->mkConstInt(Rational(lvalue));
         values_used[lvalue] = Node::null();
       }
       // is it an equivalence class with a seq.unit term?
@@ -474,7 +452,7 @@ mti.d_nthTerms; for (const Node& t : terms)
               << "-> assign via str.code: " << assignedValue << std::endl;
         }
       }
-      else if (options::stringSeqUpdate() != options::StringSeqUpdateMode::NONE)
+      else if (options().strings.seqArray != options::SeqArrayMode::NONE)
       {
         // determine skeleton based on the write model, if it exists
         const std::map<Node, Node>& writeModel = d_asolver.getWriteModel(eqc);
@@ -484,14 +462,14 @@ mti.d_nthTerms; for (const Node& t : terms)
         {
           Trace("strings-model")
               << "Write model for " << tn << " is:" << std::endl;
-          std::vector<std::pair<Node, Node> > writes;
+          std::vector<std::pair<Node, Node>> writes;
           std::unordered_set<Node> usedWrites;
           for (const std::pair<const Node, Node>& w : writeModel)
           {
             Trace("strings-model")
                 << "  " << w.first << " -> " << w.second << std::endl;
             Node ivalue = d_valuation.getModelValue(w.first);
-            Assert(ivalue.getKind() == CONST_RATIONAL);
+            Assert(ivalue.isConst() && ivalue.getType().isInteger());
             // ignore if out of bounds
             Rational irat = ivalue.getConst<Rational>();
             if (irat.sgn() == -1 || irat >= lenValue.getConst<Rational>())
@@ -538,18 +516,10 @@ mti.d_nthTerms; for (const Node& t : terms)
               {
                 base = itcs->second;
               }
-              Node cgap = mkSkeletonFromBase(base, currIndex, nextIndex);
-              /*
-              uint32_t gapSize = nextIndex - currIndex;
-              SEnumLen* selGap = sels.getEnumerator(gapSize, tn);
-              Assert(!selGap->isFinished());
-              Node cgap = selGap->getCurrent();
               // use a skeleton for the gap and not a concrete value, as we
               // do not know how which values from the element type are
               // allowable (i.e. unconstrained) to assign to the gap
-              cgap = mkSkeletonFor(cgap);
-              selGap->increment();
-              */
+              Node cgap = mkSkeletonFromBase(base, currIndex, nextIndex);
               cc.push_back(cgap);
             }
             // then take read
@@ -706,7 +676,7 @@ mti.d_nthTerms; for (const Node& t : terms)
         Assert(r.isConst() || processed.find(r) != processed.end());
         nc.push_back(r.isConst() ? r : processed[r]);
       }
-      Node cc = utils::mkNConcat(nc, tn);
+      Node cc = d_termReg.mkNConcat(nc, tn);
       Trace("strings-model")
           << "*** Determined constant " << cc << " for " << rn << std::endl;
       processed[rn] = cc;
@@ -812,7 +782,10 @@ void TheoryStrings::notifyFact(TNode atom,
                                TNode fact,
                                bool isInternal)
 {
-  d_eagerSolver.notifyFact(atom, polarity, fact, isInternal);
+  if (d_eagerSolver)
+  {
+    d_eagerSolver->notifyFact(atom, polarity, fact, isInternal);
+  }
   // process pending conflicts due to reasoning about endpoints
   if (!d_state.isInConflict() && d_state.hasPendingConflict())
   {
@@ -930,7 +903,10 @@ void TheoryStrings::eqNotifyNewClass(TNode t){
       ei->d_codeTerm = t[0];
     }
   }
-  d_eagerSolver.eqNotifyNewClass(t);
+  if (d_eagerSolver)
+  {
+    d_eagerSolver->eqNotifyNewClass(t);
+  }
 }
 
 void TheoryStrings::eqNotifyMerge(TNode t1, TNode t2)
@@ -943,7 +919,10 @@ void TheoryStrings::eqNotifyMerge(TNode t1, TNode t2)
   // always create it if e2 was non-null
   EqcInfo* e1 = d_state.getOrMakeEqcInfo(t1);
 
-  d_eagerSolver.eqNotifyMerge(e1, t1, e2, t2);
+  if (d_eagerSolver)
+  {
+    d_eagerSolver->eqNotifyMerge(e1, t1, e2, t2);
+  }
 
   // add information from e2 to e1
   if (!e2->d_lengthTerm.get().isNull())
@@ -1207,7 +1186,7 @@ void TheoryStrings::checkRegisterTermsNormalForms()
     Node lt = ei ? ei->d_lengthTerm : Node::null();
     if (lt.isNull())
     {
-      Node c = utils::mkNConcat(nfi.d_nf, eqc.getType());
+      Node c = d_termReg.mkNConcat(nfi.d_nf, eqc.getType());
       d_termReg.registerTerm(c, 3);
     }
   }
@@ -1232,8 +1211,7 @@ TrustNode TheoryStrings::ppRewrite(TNode atom, std::vector<SkolemLemma>& lems)
     SkolemCache* sc = d_termReg.getSkolemCache();
     Node k = sc->mkSkolemCached(atom, SkolemCache::SK_PURIFY, "kFromCode");
     Node t = atom[0];
-    Node card = nm->mkConst(CONST_RATIONAL,
-                            Rational(d_termReg.getAlphabetCardinality()));
+    Node card = nm->mkConstInt(Rational(d_termReg.getAlphabetCardinality()));
     Node cond =
         nm->mkNode(AND, nm->mkNode(LEQ, d_zero, t), nm->mkNode(LT, t, card));
     Node emp = Word::mkEmptyWord(atom.getType());

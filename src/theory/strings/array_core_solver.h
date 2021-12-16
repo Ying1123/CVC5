@@ -15,8 +15,8 @@
 
 #include "cvc5_private.h"
 
-#ifndef CVC5__THEORY__STRINGS__SEQ_ARRAY_SOLVER_H
-#define CVC5__THEORY__STRINGS__SEQ_ARRAY_SOLVER_H
+#ifndef CVC5__THEORY__STRINGS__ARRAY_CORE_SOLVER_H
+#define CVC5__THEORY__STRINGS__ARRAY_CORE_SOLVER_H
 
 #include "theory/strings/core_solver.h"
 #include "theory/strings/extf_solver.h"
@@ -28,17 +28,17 @@ namespace cvc5 {
 namespace theory {
 namespace strings {
 
-class SequencesArraySolver : protected EnvObj
+class ArrayCoreSolver : protected EnvObj
 {
  public:
-  SequencesArraySolver(Env& env,
-                       SolverState& s,
-                       InferenceManager& im,
-                       TermRegistry& tr,
-                       CoreSolver& cs,
-                       ExtfSolver& es,
-                       ExtTheory& extt);
-  ~SequencesArraySolver();
+  ArrayCoreSolver(Env& env,
+                  SolverState& s,
+                  InferenceManager& im,
+                  TermRegistry& tr,
+                  CoreSolver& cs,
+                  ExtfSolver& es,
+                  ExtTheory& extt);
+  ~ArrayCoreSolver();
 
   /**
    * Perform reasoning about seq.nth and seq.update operations.
@@ -62,13 +62,51 @@ class SequencesArraySolver : protected EnvObj
   const std::map<Node, Node>& getWriteModel(Node eqc);
 
   /**
-   * Get connected sequences
+   * Get connected sequences, see documentation of computeConnected.
    * @return a map M such that sequence equivalence class representatives x and
    * y are connected if an only if M[x] = M[y].
    */
   const std::map<Node, Node>& getConnectedSequences();
 
  private:
+  void sendInference(const std::vector<Node>& exp,
+                     const Node& lem,
+                     const InferenceId iid);
+
+  /**
+   * Perform reasoning about seq.nth operation.
+   * It handled the reduction from seq.extract to seq.nth, following the rule
+   * below: (t = (seq.extract A i 1)) ^ (0 <= i) ^ (i < (str.len A))
+   * ----------------------------------------------------------------------
+   * t = (seq.unit (seq.nth A i))
+   */
+  void checkNth(const std::vector<Node>& nthTerms);
+
+  /**
+   * Perform reasoning about seq.update operation.
+   * It handled the reduction from seq.update to seq.nth, following the rule
+   * below: (seq.update x i a) in TERMS (seq.nth t j) in TERMS t == (seq.update
+   * x i a)
+   * ----------------------------------------------------------------------
+   * (seq.nth (seq.update x i a) j) = (ITE, j in range(i, i+len(a)), (seq.nth a
+   * (j - i)), (seq.nth x j))
+   */
+  void checkUpdate(const std::vector<Node>& updateTerms);
+
+  /**
+   * Given the current set of update terms, this computes the connected
+   * sequences implied by the current equality information + this set of terms.
+   * Connected sequences is a reflexive transitive relation where additionally
+   * a and b are connected if there exists an update term (seq.update a n x)
+   * that is currently equal to b.
+   *
+   * This method runs a union find algorithm to compute all connected sequences.
+   *
+   * As a result of running this method, the map d_connectedSeq is populated
+   * with information regarding which sequences are connected.
+   */
+  void computeConnected(const std::vector<Node>& updateTerms);
+
   /** The solver state object */
   SolverState& d_state;
   /** The (custom) output channel of the theory of strings */
@@ -83,40 +121,22 @@ class SequencesArraySolver : protected EnvObj
   ExtTheory& d_extt;
   /** The write model */
   std::map<Node, std::map<Node, Node>> d_writeModel;
-  /** 
+  /**
    * Map from sequences to their "connected representative". Two sequences are
    * connected (based on the definition described in computeConnected) iff they
    * have the same connected representative. Sequences that do not occur in
    * this map are assumed to be their own connected representative.
-   * 
+   *
    * This map is only valid after running computeConnected, and is valid
    * only during model building.
    */
   std::map<Node, Node> d_connectedSeq;
+  /** The set of lemmas been sent */
   context::CDHashSet<Node> d_lem;
 
   // ========= data structure =========
+  /** Map sequence variable to indices that occurred in nth terms */
   std::map<Node, std::set<Node>> d_index_map;
-
-  void sendInference(const std::vector<Node>& exp, const Node& lem);
-
-  void checkNth(const std::vector<Node>& nthTerms);
-
-  void checkUpdate(const std::vector<Node>& updateTerms);
-
-  /**
-   * Given the current set of update terms, this computes the connected
-   * sequences implied by the current equality information + this set of terms.
-   * Connected sequences is a reflexive transitive relation where additionally
-   * a and b are connected if there exists an update term (seq.update a n x)
-   * that is currently equal to b.
-   *
-   * This method runs a union find algorithm to compute all connected sequences.
-   * 
-   * As a result of running this method, the map d_connectedSeq is populated
-   * with information regarding which sequences are connected.
-   */
-  void computeConnected(const std::vector<Node>& updateTerms);
 };
 
 }  // namespace strings

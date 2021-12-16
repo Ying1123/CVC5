@@ -19,10 +19,10 @@
 #define CVC5__THEORY__STRINGS__ARRAY_SOLVER_H
 
 #include "context/cdhashset.h"
+#include "theory/strings/array_core_solver.h"
 #include "theory/strings/core_solver.h"
 #include "theory/strings/extf_solver.h"
 #include "theory/strings/inference_manager.h"
-#include "theory/strings/sequences_array_solver.h"
 #include "theory/strings/solver_state.h"
 #include "theory/strings/term_registry.h"
 
@@ -56,13 +56,18 @@ class ArraySolver : protected EnvObj
    */
   void checkArrayConcat();
   /**
-   * Perform reasoning about seq.nth and seq.update operations.
+   * Perform reasoning about seq.nth and seq.update operations (lazily), which
+   * calls the core sequences-array solver for the set of nth/update terms over atomic
+   * equivalence classes.
    */
   void checkArray();
+  /**
+   * Same as `checkArray`, but called eagerly, and for all nth/update terms, not just
+   * those over atomic equivalence classes.
+   */
   void checkArrayEager();
 
   /**
-   *
    * @param eqc The sequence equivalence class representative. We can assume
    * the equivalence class of eqc contains no concatenation terms.
    * @return the map corresponding to the model for eqc. The domain of
@@ -72,6 +77,9 @@ class ArraySolver : protected EnvObj
    * this map.
    */
   const std::map<Node, Node>& getWriteModel(Node eqc);
+  /**
+   * Get connected sequences from the core array solver.
+   */
   const std::map<Node, Node>& getConnectedSequences();
 
  private:
@@ -92,7 +100,7 @@ class ArraySolver : protected EnvObj
   /** Common constants */
   Node d_zero;
   /** The core array solver */
-  SequencesArraySolver d_sasolver;
+  ArrayCoreSolver d_coreSolver;
   /** Equalities we have processed in the current context */
   NodeSet d_eqProc;
 };

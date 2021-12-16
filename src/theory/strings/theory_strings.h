@@ -171,17 +171,6 @@ class TheoryStrings : public Theory {
     /** The theory of strings object to notify */
     TheoryStrings& d_str;
   };/* class TheoryStrings::NotifyClass */
-  /** Model type info, update in collectModelValues below */
-  class ModelTypeInfo
-  {
-   public:
-    /** The set of representatives */
-    std::unordered_set<Node> d_repSet;
-    /** The set of str.update terms */
-    std::unordered_set<Node> d_updateTerms;
-    /** The set of seq.nth terms */
-    std::unordered_set<Node> d_nthTerms;
-  };
   /** compute care graph */
   void computeCareGraph() override;
   /**
@@ -201,14 +190,15 @@ class TheoryStrings : public Theory {
    *
    * @param tn The type to compute model values for
    * @param toProcess Remaining types to compute model values for
-   * @param tinfo A map of types to information, including representatives of
+   * @param repSet A map of types to representatives of
    * the equivalence classes of the given type
    * @return false if a conflict is discovered while doing this assignment.
    */
-  bool collectModelInfoType(TypeNode tn,
-                            std::unordered_set<TypeNode>& toProcess,
-                            const std::map<TypeNode, ModelTypeInfo>& tinfo,
-                            TheoryModel* m);
+  bool collectModelInfoType(
+      TypeNode tn,
+      std::unordered_set<TypeNode>& toProcess,
+      const std::map<TypeNode, std::unordered_set<Node>>& repSet,
+      TheoryModel* m);
 
   /** assert pending fact
    *
@@ -244,7 +234,8 @@ class TheoryStrings : public Theory {
    */
   void checkRegisterTermsNormalForms();
   /**
-   * Turn a sequence constant into a skeleton
+   * Turn a sequence constant into a skeleton specifying how to construct
+   * its value.
    * In particular, this means that value:
    *   (seq.++ (seq.unit 0) (seq.unit 1) (seq.unit 2))
    * becomes:
@@ -258,6 +249,14 @@ class TheoryStrings : public Theory {
    */
   Node mkSkeletonFor(Node value);
   /**
+   * Make the skeleton for the basis of constructing sequence r between
+   * indices currIndex (inclusive) and nextIndex (exclusive). For example, if
+   * currIndex = 2 and nextIndex = 5, then this returns:
+   *   (seq.++ (seq.unit k_{r,2}) (seq.unit k_{r,3}) (seq.unit k_{r,4}))
+   * where k_{r,2}, k_{r,3}, k_{r,4} are Skolem variables of the element type
+   * of r that are unique to the pairs (r,2), (r,3), (r,4). In other words,
+   * these Skolems abstractly represent the element at positions 2, 3, 4 in the
+   * model for r.
    */
   Node mkSkeletonFromBase(Node r, size_t currIndex, size_t nextIndex);
   //-----------------------end inference steps
@@ -287,7 +286,7 @@ class TheoryStrings : public Theory {
   /** The theory rewriter for this theory. */
   StringsRewriter d_rewriter;
   /** The eager solver */
-  EagerSolver d_eagerSolver;
+  std::unique_ptr<EagerSolver> d_eagerSolver;
   /** The extended theory callback */
   StringsExtfCallback d_extTheoryCb;
   /** The (custom) output channel of the theory of strings */
