@@ -6,6 +6,8 @@
   https://img.shields.io/endpoint?url=https://cvc5.stanford.edu/downloads/builds/coverage/nightly-coverage.json)](
     https://cvc5.stanford.edu/downloads/builds/coverage)
 
+
+
 cvc5
 ===============================================================================
 
